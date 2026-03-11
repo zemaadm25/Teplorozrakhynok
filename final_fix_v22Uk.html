@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <title>ТеплоРозрахунок PRO — Повна Інженерна Версія</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f0f2f5; padding: 20px; font-size: 14px; color: #333; }
+        .container { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 450px 1fr; gap: 20px; }
+        .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); }
+        .full { grid-column: 1 / -1; }
+        .btn { padding: 10px 15px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; transition: 0.3s; }
+        .btn-add { background: #27ae60; color: white; width: 100%; margin-top: 10px; }
+        .btn-print { background: #34495e; color: white; }
+        .layer-item { background: #f8f9fa; padding: 12px; margin-bottom: 10px; border: 1px solid #dee2e6; border-radius: 8px; }
+        .layer-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .res-container { display: flex; align-items: center; gap: 10px; margin-top: 15px; }
+        #resR { font-size: 26px; font-weight: bold; color: #2c3e50; }
+        .info-icon { display: inline-block; width: 22px; height: 22px; background: #3498db; color: white; border-radius: 50%; text-align: center; line-height: 22px; cursor: help; font-weight: bold; position: relative; }
+        .info-icon:hover::after {
+            content: "Норми України (R min):\n• Стіни: 3.3 м²·К/Вт\n• Дахи: 6.0 м²·К/Вт";
+            position: absolute; left: 30px; top: -10px; background: #2c3e50; color: white; padding: 10px; border-radius: 6px; font-size: 12px; white-space: pre-line; width: 180px; z-index: 100;
+        }
+        @media print { .btn, .btn-add, .input-box, select, button, .info-icon { display: none !important; } .container { display: block; } .card { box-shadow: none; border: 1px solid #eee; } }
+        .chart-box { height: 450px; margin-top: 10px; }
+        input[type="number"] { padding: 5px; border: 1px solid #ccc; border-radius: 4px; width: 60px; }
+        .input-box { font-size: 11px; color: #7f8c8d; text-transform: uppercase; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="card">
+        <h3>1. Параметри оточення</h3>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 15px;">
+            <div class="input-box">Тип об'єкта
+                <select id="constType" onchange="recalc()" style="width: 100%; padding: 5px;">
+                    <option value="0.13|0.04">Стіна (Rsi=0.13)</option>
+                    <option value="0.10|0.04">Дах (Rsi=0.10)</option>
+                </select>
+            </div>
+            <div class="input-box">Вологість % <input type="number" id="hIn" value="50" oninput="recalc()"></div>
+            <div class="input-box">Т всередині °C <input type="number" id="tIn" value="22" oninput="recalc()"></div>
+            <div class="input-box">Т зовні °C <input type="number" id="tOut" value="-20" oninput="recalc()"></div>
+        </div>
+        <div style="display:flex; gap: 5px;">
+            <button class="btn btn-print" onclick="window.print()">🖨️ Звіт (PDF)</button>
+            <button class="btn" style="background:#bdc3c7;" onclick="exportData()">💾 Зберегти</button>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>2. Конструкція (зсередини → зовні)</h3>
+        <div id="layersList"></div>
+        <button class="btn btn-add" onclick="addLayer()">+ Додати шар</button>
+        <div class="res-container"><div id="resR">R = 0.000</div><div class="info-icon">!</div></div>
+    </div>
+
+    <div class="card full">
+        <h3>3. Аналіз: Температура, Точка роси та Лінія 0°C</h3>
+        <div class="chart-box"><canvas id="mainChart"></canvas></div>
+    </div>
+</div>
+
+<script>
+const library = [
+    {group: "Бетон та Камінь", items: [
+        {name: "Бетон важкий", lambda: 2.04, color: "#7f8c8d"}, {name: "Залізобетон", lambda: 2.50, color: "#636e72"},
+        {name: "Газобетон D400", lambda: 0.11, color: "#f5f6fa"}, {name: "Газобетон D500", lambda: 0.13, color: "#f5f6fa"},
+        {name: "Пінобетон 600", lambda: 0.22, color: "#dcdde1"}, {name: "Граніт", lambda: 3.49, color: "#3d3d3d"},
+        {name: "Вапняк", lambda: 1.16, color: "#f1f2f6"}
+    ]},
+    {group: "Цегла та Кладка", items: [
+        {name: "Саман (глина з соломою)", lambda: 0.30, color: "#d35400"},
+        {name: "Цегла повнотіла", lambda: 0.81, color: "#e66767"},
+        {name: "Цегла пустотіла", lambda: 0.44, color: "#f19066"},
+        {name: "Цегла силікатна", lambda: 0.87, color: "#f7f1e3"},
+        {name: "Кладка керамічна", lambda: 0.35, color: "#cf6a87"}
+    ]},
+    {group: "Утеплювачі", items: [
+        {name: "Мінвата (кам'яна)", lambda: 0.042, color: "#f1c40f"},
+        {name: "Мінвата (скляна)", lambda: 0.044, color: "#f5cd79"},
+        {name: "ППС (пінопласт)", lambda: 0.039, color: "#ffffff"},
+        {name: "ЕППС (екструдер)", lambda: 0.032, color: "#74b9ff"},
+        {name: "Пінополіуретан", lambda: 0.025, color: "#ffeaa7"},
+        {name: "Ековата", lambda: 0.043, color: "#b2bec3"}
+    ]},
+    {group: "Плівки та Пароізоляція", items: [
+        {name: "Пароізоляційна плівка (Паробар'єр)", lambda: 0.17, color: "#3498db", vb: true},
+        {name: "Гідробар'єр", lambda: 0.17, color: "#2980b9", vb: false},
+        {name: "Руберойд", lambda: 0.17, color: "#2d3436", vb: true}
+    ]},
+    {group: "Дерево та Плити", items: [
+        {name: "Сосна поперек волокон", lambda: 0.15, color: "#fab1a0"},
+        {name: "Дуб поперек волокон", lambda: 0.18, color: "#63523b"},
+        {name: "ОСП (OSB-3)", lambda: 0.13, color: "#ccae62"},
+        {name: "Фанера", lambda: 0.15, color: "#f3a683"},
+        {name: "ДСП", lambda: 0.15, color: "#84817a"}
+    ]},
+    {group: "Оздоблення", items: [
+        {name: "Штукатурка цементна", lambda: 0.93, color: "#bdc3c7"},
+        {name: "Штукатурка гіпсова", lambda: 0.35, color: "#ecf0f1"},
+        {name: "ГКЛ (гіпсокартон)", lambda: 0.21, color: "#ced6e0"},
+        {name: "Керамічна плитка", lambda: 1.10, color: "#1e3799"}
+    ]},
+    {group: "Інше", items: [
+        {name: "Повітряний прошарок", lambda: 0.14, color: "#81ecec"},
+        {name: "Пісок", lambda: 0.35, color: "#ffeaa7"},
+        {name: "Скло", lambda: 0.76, color: "#a29bfe"}
+    ]}
+];
+
+let layers = [];
+let chart = null;
+
+function addLayer() {
+    layers.push({name: "Оберіть матеріал...", lambda: 0.1, thick: 100, color: "#cccccc", vb: false});
+    renderLayers(); recalc();
+}
+
+function renderLayers() {
+    const list = document.getElementById('layersList');
+    list.innerHTML = "";
+    layers.forEach((l, i) => {
+        const div = document.createElement('div');
+        div.className = "layer-item";
+        div.innerHTML = `
+            <div class="layer-controls">
+                <select onchange="selectMat(${i}, this.value)" style="flex:1">
+                    <option selected disabled>${l.name}</option>
+                    ${library.map(g => `<optgroup label="${g.group}">${g.items.map(m => `<option value="${m.name}|${m.lambda}|${m.color}|${m.vb || false}">${m.name}</option>`).join('')}</optgroup>`).join('')}
+                </select>
+                <div class="input-box">λ <input type="number" step="0.001" value="${l.lambda}" oninput="updateVal(${i},'lambda',this.value)"></div>
+                <div class="input-box">мм <input type="number" value="${l.thick}" oninput="updateVal(${i},'thick',this.value)"></div>
+                <button class="btn" style="background:#e74c3c; color:white;" onclick="layers.splice(${i},1); renderLayers(); recalc();">×</button>
+            </div>
+        `;
+        list.appendChild(div);
+    });
+}
+
+function selectMat(i, val) {
+    const [name, lambda, color, vb] = val.split('|');
+    layers[i] = { ...layers[i], name, lambda: parseFloat(lambda), color, vb: vb === "true" };
+    recalc();
+}
+
+function updateVal(i, key, val) { layers[i][key] = parseFloat(val); recalc(); }
+
+function calculateDewPoint(t, h) {
+    if (h < 1) return -50;
+    const a = 17.27, b = 237.7;
+    const f = ((a * t) / (b + t)) + Math.log(h / 100);
+    return (b * f) / (a - f);
+}
+
+function recalc() {
+    const [rsi, rse] = document.getElementById('constType').value.split('|').map(parseFloat);
+    const tIn = parseFloat(document.getElementById('tIn').value);
+    const tOut = parseFloat(document.getElementById('tOut').value);
+    const hIn = parseFloat(document.getElementById('hIn').value);
+
+    let R_total = rsi + rse;
+    layers.forEach(l => R_total += (l.thick / 1000) / l.lambda);
+    
+    const isWall = document.getElementById('constType').value.startsWith("0.13");
+    const minR = isWall ? 3.3 : 6.0;
+    const resEl = document.getElementById('resR');
+    resEl.innerText = `R = ${R_total.toFixed(3)}`;
+    resEl.style.color = R_total >= minR ? "#27ae60" : "#e67e22";
+
+    let currentX = 0;
+    let currentT = tIn;
+    let humidityBlocked = false;
+
+    const labels = [0, 0.1];
+    const temps = [tIn, tIn - (tIn - tOut) * (rsi / R_total)];
+    const dews = [calculateDewPoint(tIn, hIn), calculateDewPoint(temps[1], hIn)];
+
+    currentT = temps[1];
+    layers.forEach(l => {
+        currentX += l.thick;
+        currentT -= (tIn - tOut) * (((l.thick / 1000) / l.lambda) / R_total);
+        if (l.vb) humidityBlocked = true;
+
+        labels.push(currentX);
+        temps.push(currentT);
+        dews.push(humidityBlocked ? -25 : calculateDewPoint(currentT, hIn));
+    });
+
+    labels.push(currentX + 0.1);
+    temps.push(currentT - (tIn - tOut) * (rse / R_total));
+    dews.push(humidityBlocked ? -25 : calculateDewPoint(temps[temps.length-1], hIn));
+
+    updateChart(labels, temps, dews);
+}
+
+function updateChart(labels, temps, dews) {
+    const ctx = document.getElementById('mainChart').getContext('2d');
+    if (chart) chart.destroy();
+
+    chart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [
+                { label: 'Температура (°C)', data: temps, borderColor: '#e74c3c', borderWidth: 3, pointRadius: 0, tension: 0, fill: false },
+                { label: 'Точка роси (°C)', data: dews, borderColor: '#3498db', borderDash: [5, 5], pointRadius: 0, tension: 0, fill: {target: '-1', above: 'rgba(52, 152, 219, 0.1)'} },
+                { label: 'Лінія 0°C', data: labels.map(() => 0), borderColor: 'red', borderWidth: 1, pointRadius: 0, fill: false }
+            ]
+        },
+        options: {
+            maintainAspectRatio: false,
+            scales: { x: { type: 'linear', title: {display: true, text: 'Товщина стіни (мм)'} }, y: { min: -25, max: 30 } },
+            animation: false
+        },
+        plugins: [{
+            id: 'bg',
+            beforeDraw: (c) => {
+                const {ctx, chartArea, scales: {x}} = c;
+                let startX = 0;
+                layers.forEach(l => {
+                    const xL = x.getPixelForValue(startX); const xR = x.getPixelForValue(startX + l.thick);
+                    ctx.fillStyle = l.color + "22";
+                    ctx.fillRect(xL, chartArea.top, xR - xL, chartArea.bottom - chartArea.top);
+                    startX += l.thick;
+                });
+            }
+        }]
+    });
+}
+
+function exportData() {
+    const data = JSON.stringify({ layers, settings: { tIn: document.getElementById('tIn').value, tOut: document.getElementById('tOut').value, hIn: document.getElementById('hIn').value, type: document.getElementById('constType').value }});
+    const blob = new Blob([data], {type: 'application/json'});
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'thermal_pro.json'; a.click();
+}
+
+addLayer();
+</script>
+</body>
+</html>
